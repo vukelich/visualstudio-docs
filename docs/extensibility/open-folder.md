@@ -21,16 +21,21 @@ ms.workload:
 
 ## What is Open Folder?
 
-Open Folder is an experience introduced in Visual Studio 2017 allowing users to open any code base. Without any workloads installed, Open Folder provides Solution Explorer tree population and search, editor colorization, GoTo and Find in Files search, and more. Other workloads, like the workloads for .NET and C++ development, power richer Intellisense and specific language-specific functionality.
+Open Folder is a new experience introduced in Visual Studio 2017. It allows users to open any codebase. Without any workloads installed, Open Folder provides Solution Explorer tree population and search, editor colorization, GoTo and Find in Files search, and more. Other workloads, like the workloads for .NET and C++ development, power richer Intellisense and specific language-specific functionality.
 
 ### A divergence from project systems
-Historically, Visual Studio only understood the collection of code in a Solution and its projects. A project system is responsible for the functionality and user interactions of a loaded project. The project system understands what files its project contains, the visual representation of the project contents, dependencies on other projects, and modification of the underlying project file. It's through these hierarchies and capabilities that other components can do some work on behalf of the user. Not all user code bases are represented in this structure. Scripting language projects where there is nothing 'buildable' are an example. With Open Folder, Visual Studio gives end users a new way of interacting with any of their code.
+Historically, Visual Studio only understood files in a Solution and its projects using project systems. A project system is responsible for the functionality and user interactions of a loaded project. It understands what files its project contains, the visual representation of the project contents, dependencies on other projects, and modification of the underlying project file. It's through these hierarchies and capabilities that other components can do some work on behalf of the user. Not all user codebases are represented in this structure. Scripting language projects where there is nothing 'buildable' are an example. With Open Folder, Visual Studio gives end users a new way of interacting with any of their code.
 
 New APIs under the `Microsoft.VisualStudio.Workspace.*` are available for extenders to produce and consume data or actions around files within Open Folder. New concepts or different extension point areas include:
 - File contexts and actions
 - Workspace indexing
 - Tasks.vs.json and Launch.vs.json
 - Workspace settings
+
+The following are examples of types **not** used in Open Folder due to incompatibility or the lack of project systems:
+- `IVsHierarchy`
+- `IVsProject`
+- `DTE`
 
 ### Workspaces
 A workspace is how Visual Studio represents an arbitrary collection of files in Open Folder. By itself, the Open Folder feature doesn't understand the contents or features related to files within the folder. Rather, it provides a general set of APIs for features and extensions to produce and consume data that others can act upon. The producers are composed through MEF using various export attributes.
@@ -41,39 +46,47 @@ A workspace is how Visual Studio represents an arbitrary collection of files in 
 #### Workspace providers and services
 Workspace providers and services provide the data and functionality to react to the contents of a workspace. They might provide contextual file information, symbols in source files, or build functionality.
 
+Both concepts use a factory pattern and are imported by MEF by the workspace. All export attributes implement `IProviderMetadataBase` or `IWorkspaceServiceFactoryMetadata`, but there are sub-types specific for the type being exported.
+
 One difference between providers and services is their relation to the workspace. A workspace can have many providers of a particular type, but only one service of a particular type is created per workspace. For example, there are many file scanner providers because each map to a different language or file extension they parse while there is only one indexing service per workspace.
 
-Another key difference is consumption of data from providers and services. Extensions can get instances of and interact with workspaces services. Extension methods on `IWorkspace` are available for the services provided by Visual Studio, such as [IWorkspace.GetFileWatcherService][Doc:WorkspaceServiceHelper.GetFileWatcherService]. Do not author services that conflict with Visual Studio as that will lead to unexpected issues. Your extension may offer a workspace service for components within your extension or for other extensions to consume. Consumers should use [IWorkspace.GetServiceAsync][Doc:WorkspaceServiceHelper.GetServiceAsync] or an extension method you provide on the `IWorkspace` type.
+Another key difference is consumption of data from providers and services. The workspace is the entry point to get data from providers for a couple reasons. First, providers typically have some narrow set of data they create. That might be symbols for a C# source file or build file contexts for a `CMakeLists.txt` file. The workspace will match a consumers request to the providers whose metadata align with the request. Second, some scenarios allow for many providers to contribute to a requeset while others scenarios use the provider with highest priority.
 
-Both concepts use a factory pattern and are imported from MEF by the workspace. All export attributes implement `IProviderMetadataBase` or `IWorkspaceServiceFactoryMetadata`, but there are sub-types specific for the type being exported. 
+In contrast, extensions can get instances of and interact directly with workspaces services. Extension methods on `IWorkspace` are available for the services provided by Visual Studio, such as [IWorkspace.GetFileWatcherService][Doc:WorkspaceServiceHelper.GetFileWatcherService]. Your extension may offer a workspace service for components within your extension or for other extensions to consume. Consumers should use [IWorkspace.GetServiceAsync][Doc:WorkspaceServiceHelper.GetServiceAsync] or an extension method you provide on the `IWorkspace` type.
 
+>![Warning]
+> Do not author services that conflict with Visual Studio. It will lead to unexpected issues.
+
+#### Disposal on workspace closure
+On closure of a workspace, extenders might need to dipose but call asynchronous code. This can be done easily by writing providers and services that implement [IAsyncDisposable][Doc:IAsyncDisposable].
 
 #### Related types
 - [IWorkspace][Doc:IWorkspace] is the central entity for an opened workspace like an opened folder.
 - [IWorkspaceProviderFactory\<T\>][Doc:IWorkspaceProviderFactory<T>] creates a provider per workspace instantiated.
 - [IWorkspaceServiceFactory\<T\>][Doc:IWorkspaceServiceFactory<T>] creates a service per workspace instantiated.
+- [IAsyncDisposable][Doc:IAsyncDisposable] should be implemented on proviers and servies that need to run asynchronous code during disposal.
 - [WorkspaceServiceHelper][Doc:WorkspaceServiceHelper] provides helper methods for accessing well-known services or arbitrary services.
 
 ### File contexts
-All insights in workspaces are produced by "file context providers" that implement the `IFileContextProvider` interface. These extensions might look for patterns in folders or files, read MSBuild files, makefiles, package dependencies, etc. in order to accumulate the insights they need to define a file context. A file context by itself does not perform any action, but rather provides data that another kind of extension can then act on.
+All insights in workspaces are produced by "file context providers" that implement the `IFileContextProvider` interface. These extensions might look for patterns in folders or files, read MSBuild files, makefiles, package dependencies, etc. in order to accumulate the insights they need to define a file context. A file context by itself does not perform any action, but rather provides data that another extension can then act on.
 
 Each `FileContext` has a `Guid` associated with it that identifies the type of data it carries. AnyCode uses this `Guid` later to match it up with extensions that may consume the data. A file context provider is exported with metadata that identifies which file context `Guid`s it may produce data for.
 
-Once contrived, a file context can be associated with any number of files or folders in the workspace. A given file or folder may be associated with any number of file contexts. It is a many-to-many relationship.
+Once contrived, a file context can be associated with any number of files or folders in the workspace. A given file or folder may be associated with any number of file contexts. It's a many-to-many relationship.
 
 The most common scenarios for file contexts are related to build, debug, and language services. For more information, see other sections related to these scenarios.
 
 #### `FileContext` lifecycle
-Lifecycles for a `FileContext` are non-deterministic. At any time, a component can asynchronously request for some set of context types, and the appropriate producers respond with any of the context types they support. The `IWorkspace` instance acts as the middle-man between the consumer and producers through the `IWorkspace.GetFileContextsAsync` method. Consumers might request a context and perform  However, changes might happen to files that cause a file context to become outdated. For example, if a build context is provided for some file but an on-disk change invalidates that context, then the original producer can invoke `FileContext.OnFileContextChanged`. Any consumers still referencing that `FileContext` can then requery for a new `FileContext`.
+Lifecycles for a `FileContext` are non-deterministic. At any time, a component can asynchronously request for some set of context types, and the appropriate producers respond with any of the context types they support. The `IWorkspace` instance acts as the middle-man between the consumer and producers through the `IWorkspace.GetFileContextsAsync` method. Consumers might request a context and perform some action based on the context. Others might request a context and maintain a long lived reference. However, changes might happen to files that cause a file context to become outdated. The producer of the can fire an event handler on the `FileContext` to notify consumers of updates. For example, if a build context is provided for some file but an on-disk change invalidates that context, then the original producer can invoke `FileContext.OnFileContextChanged`. Any consumers still referencing that `FileContext` can then requery for a new `FileContext`.
 
 >[!NOTE]
 > There is no push model to consumers. Consumers won't be notified of a provider's new `FileContext` if one becomes available.
 
 #### Expensive file context computations
-Reading contents from the disk can be expensive, especially when you're trying to find the relation between files. Say you're queried for a file context for a source file, but the file context is dependent on metadata from a project file. Parsing the project file or evaluating it with MSBuild is expensive. Instead, you could provide an `IFileScanner` to create `FileDataValue` data during workspace indexing. For more information on indexing, see the [Workspace indexing](#Workspace-indexing) section.
+Reading contents from the disk can be expensive, especially when a provider needs to find the relation between files. For example, a provider is queried for some source file's file context, but the file context is dependent on metadata from a project file. Parsing the project file or evaluating it with MSBuild is expensive. Instead, the extension can export an `IFileScanner` to create `FileDataValue` data during workspace indexing. Then when asked for file contexts, the `IFileContextProvider` can quickly query for that indexed data. the For more information on indexing, see the [Workspace indexing](#Workspace-indexing) section.
 
 >![Warning]
->Be cautious of other ways your `FileContext` might be expensive to compute. Some UI interactions are synchronous and rely on a high volume of `FileContext` requests. A good examples include opening an editor tab and opening a **Solution Explorer** context menu. These actions make many build context type requests.
+>Be cautious of other ways your `FileContext` might be expensive to compute. Some UI interactions are synchronous and rely on a high volume of `FileContext` requests. Examples include opening an editor tab and opening a **Solution Explorer** context menu. These actions make many build context type requests.
 
 #### Related types and methods
 - [FileContext][Doc:FileContext] holds data and metadata.
@@ -86,16 +99,18 @@ Reading contents from the disk can be expensive, especially when you're trying t
 In a Solution, project systems are responsible for providing funcitonality for build, debug, **GoTo** symbol searching, and more. Project sysetms can do this work because they understand the relation and capabilities of files within a project. A workspace needs the same insight to provide rich IDE features, too. The collection and persistent storage of this data is a process called workspace indexing. This indexed data can be queried through a set of asynchronous APIs. Extenders can participate in the indexing process by providing `IFileScanner`s that know how to handle certain types of files.
 
 #### Types of indexed data
-There are several types of indexed data. 
+There are three kinds of data that are indexed. Note the type expected from file scanners differs from the type deserialized from the index.
 
-`FileSystemEntity` is the basic 
-
-
+|Data|File scanner type|Index query result type|Related types|
+|---------|-----|-----------------|-----------------------|-------------|
+|References|`FileReferenceInfo`|`FileReferenceResult`|`FileReferenceInfoType`|
+|Symbols|`SymbolDefinition`|`SymbolDefinitionSearchResult`|`ISymbolService` should be used instead of `IIndexWorkspaceService`|
+|Data values|`FileDataValue`|`FileDataResult<T>`|
 
 #### Querying for indexed data
 There are two asynchronous types available to access persisted data. The first is through `IIndexWorkspaceData`. It provides basic access to a single file's `FileReferenceResult` and `FileDataResult` data.
 
-```charp
+```csharp
 using Microsoft.VisualStudio.Workspace;
 using Microsoft.VisualStudio.Workspace.Indexing;
 
@@ -114,9 +129,18 @@ private static IIndexWorkspaceService GetDirectIndexedData(IWorkspace workspace)
 ```
 
 #### Particpating in indexing
-Workspace indexing follows the following sequence:
+Workspace indexing rougly follows the following sequence:
 1) Discovery and persistence of file system entities in the workspace (only on initial opening scan)
-1) 
+1) Per file, the matching provider with the highest priority is asked to scan for `FileReferneceInfo`s.
+1) Per file, the matching provider with the highest priority is asked to scan for `SymbolDefinition`s.
+1) Per file, all providers are aked for `FileDataValue`s.
+
+Extensions can export a scanner by implementing `IWorkspaceProviderFactory<IFileScanner>` and exporting the type with `ExportFileScannerAttribute`. The `SupportedTypes` attribute argument should be one or more values from `FileScannerTypeConstants`. For an example scanner, see the VS SDK sample [here][Ex:FileScanner].
+
+>![Warning]
+>Do not export a file scanner that supports the `FileScannerTypeConstants.FileScannerContentType` type. It is used for Microsoft internal purposes, only.
+
+In advanced situations, an extension might dynamically support an arbitrary set of file types. Rather than MEF exporting `IWorkspaceProviderFactory<IFileScanner>`, an extension can export `IWorkspaceProviderFactory<IFileScannerProvider>`. When indexing begins, this factory type will be imported, instantiated, and have its [IFileScannerProvider.GetSymbolScannersAsync][Doc:IFileScannerProvider.GetSymbolScannersAsync] method invoked. (`IFileScanner` instances supporting any value from `FileScannerTpeConstants` will be honored, not just symbols.)
 
 ### Tasks.vs.json and Launch.vs.json
 
@@ -124,6 +148,28 @@ Workspace indexing follows the following sequence:
 >For more information on authoring a tasks.vs.json or launch.vs.json file, see [Customize build and debug tasks][Ref:TasksLaunchSettings].
 
 ### Workspace settings
+Workspaces have an `IWorkspaceSettingsManager` service with simple but powerful control over a workspace. For a basic overview of settings, see TODO LINK TO DOC. 
+
+Settings for most `SettingsType` types are `.json` files, such as `VSWorkspaceSettings.json` and `tasks.vs.json`. 
+
+The power of workspace settings centers around "scopes," which are simply paths within the workspace. When a consumer calls `IWorkspaceSettingsManager.GetAggregatedSettings`, all the scopes that include the requested path are aggregated. Scope aggregation priority is as follows:
+1. "Local settings", which is typically the workspace root's `.vs` directory.
+1. The requested path itself.
+1. The parent directory of the requested path.
+1. All further parent directories up to and including the workspace root.
+1. "Global settings", which is in a user directory.
+
+The result is an instance of `IWorkspaceSettings`. The 
+
+#### Providing dynamic settings
+Extensions can provide in-memory providers
+
+>![TIP]
+>When implementing `IWorkspaceSettingsProvider.GetSingleSettings`, return an instance of `IWorkspaceSettings` rather than `IWorkspaceSettingsSourcce`. `IWorkspaceSettings` provides more information that can be useful during some settings aggregations.
+
+#### Related types and methods
+- [IWorkspaceSettingsManager][Doc:IWorkspaceSettingsManager] reads and aggregates settings for workspace.
+- [IWorkspace.GetSettingsManager][Doc:WorkspaceServiceHelper.GetSettingsManager] gets the `IWorkspaceSettingsManager` for a workspace.
 
 ### Detailed scenarios
 
@@ -158,12 +204,28 @@ Create a file context provider factory to produce File context that can be conne
 Create a language service provider factory that is prepared to receive your context data of a file context and so something useful with it
 
 ##### Related interfaces
-- [ILanguageServiceProvider][Doc:ILanguageServiceProvider]
+- [ILanguageServiceProvider][Doc:ILanguageServiceProvider] is invoked when a file of matching file types are opened or closed for editing.
 
 ### Do's and Don't's in extension authoring
 
 - **DO** Return objects from `IWorkspaceProviderFactory.CreateProvider` or similar APIs that remember their `Workspace` context when created. Providers interfaces are written expecting this object is kept on creation. 
-    - One scenario that might have an exception is `ILanguageServiceProvider`. Its methods are passed full paths instead of the typical workspace-relative paths.
+- **DO** save workspace-spcific caches or settings within the "Local settings" path of the workspace. Create a path for your file using [IWorkspace.MakeRootedUnderWorkingFolder][Doc:WorkspaceHelper.MakeRootedUnderWorkingFolder] in 15.6 or later. For prior to 15.6, use the following snippet:
+```csharp
+using System.IO;
+using Microsoft.VisualStudio.Workspace;
+using Microsoft.VisualStudio.Workspace.Settings;
+
+private static string MakeRootedUnderWorkingFolder(IWorkspace workspace, string relativePath)
+{
+    string workingFolder = workspace.GetSettingsManager().GetAggregatedSettings(SettingsTypes.WorkspaceControlSettings).Property<string>("WorkingFolder");
+    return Path.Combine(workingFolder, relativePath);
+}
+```
+
+### Solution events and package auto-load
+Loaded packages can implement `IVsSolutionEvents7` and invoke `IVsSolution.AdviseSolutionEvents`. It includes eventing on opening and closing a folder in Visual Studio.
+
+A UI context can be used to to auto-load your package. The value is `4646B819-1AE0-4E79-97F4-8A8176FDD664`.
 
 
 ### Feedback, comments, issues
@@ -171,6 +233,7 @@ Open Folder and the `Microsoft.VisualStudio.Workspace.*` APIs are under active d
 
 [Doc:BuildContextTypes]:/dotnet/api/microsoft.visualstudio.workspace.build.buildcontexttypes
 [Doc:ExportFileContextProviderAttribute]:/dotnet/api/microsoft.visualstudio.workspace.ExportFileContextProviderAttribute
+[Doc:IAsyncDisposable]:/dotnet/api/microsoft.visualstudio.threading.iasyncdisposable
 [Doc:FileContext]:/dotnet/api/microsoft.visualstudio.workspace.filecontext
 [Doc:IFileContextProvider]:/dotnet/api/microsoft.visualstudio.workspace.ifilecontextprovider
 [Doc:IFileContextProvider<T>]:/dotnet/api/microsoft.visualstudio.workspace.ifilecontextprovider-1
@@ -182,7 +245,12 @@ Open Folder and the `Microsoft.VisualStudio.Workspace.*` APIs are under active d
 [Doc:IWorkspace.GetFileContextsAsync]:/dotnet/api/microsoft.visualstudio.workspace.iworkspace.getfilecontextsasync
 [Doc:IWorkspaceProviderFactory<T>]:/dotnet/api/microsoft.visualstudio.workspace.iworkspaceproviderfactory-1
 [Doc:IWorkspaceServiceFactory<T>]:/dotnet/api/microsoft.visualstudio.workspace.iworkspaceservicefactory-1
+[Doc:WorkspaceHelper.GetWorkspaceWorkingFolder]:/dotnet/api/microsoft.visualstudio.workspace.workspaceservicehelper.getworkspaceworkingfolder
+[Doc:WorkspaceHelper.MakeRootedUnderWorkingFolder]:/dotnet/api/microsoft.visualstudio.workspace.workspaceservicehelper.makerootedunderworkingfolder
 [Doc:WorkspaceServiceHelper]:/dotnet/api/microsoft.visualstudio.workspace.workspaceservicehelper
-[Doc:WorkspaceServiceHelper.GetFileWatcherService]:/dotnet/api/microsoft.visualstudio.workspace.workspaceservicehelper.getfilewatcherservic
+[Doc:WorkspaceServiceHelper.GetFileWatcherService]:/dotnet/api/microsoft.visualstudio.workspace.workspaceservicehelper.getfilewatcherservice
+[Doc:WorkspaceServiceHelper.GetSettingsManager]:/dotnet/api/microsoft.visualstudio.workspace.workspaceservicehelper.getsettingsmanager
 [Doc:WorkspaceServiceHelper.GetServiceAsync]:/dotnet/api/microsoft.visualstudio.workspace.workspaceservicehelper.getserviceasync
+[Doc:IWorkspaceSettingsManager]:dotnet/api/microsoft.visualstudio.workspace.settings.workspacesettingsmanager
+[Ex:FileScanner]:
 [Ref:TasksLaunchSettings]:/ide/customize-build-and-debug-tasks-in-visual-studio
