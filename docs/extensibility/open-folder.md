@@ -291,6 +291,7 @@ Buzz words to include:
 - BuildContextTypes
 - IFileContextActionProvider
 - IBuildConfigurationContext must be type of FileContext.Context
+  - Configuration must be null OR match the active config
 
 Up to date/incremental
 
