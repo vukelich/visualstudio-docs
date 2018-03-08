@@ -286,21 +286,77 @@ A workspace listens to file change notifications and provides the [IFileWatcherS
 
 ### Build support
 
-Buzz words to include:
+Build support requires an extender to supply indexed and file context data, as well as the build action to run. Things you'll need:
 
-- BuildContextTypes
-- IFileContextActionProvider
-- IBuildConfigurationContext must be type of FileContext.Context
-  - Configuration must be null OR match the active config
+- Build file context
+  - Provider factory
+    - `ExportFileContextProviderAttribute` attribute with `supportedContextTypeGuids` as all applicable `string` constants from `BuildContextTypes`
+    - Implements `IWorkspaceProviderFactory<IFileContextProvider>`
+    - File context provider
+      - Return a `FileContext` for each build operation and configuration supported
+        - `contextType` from `BuildContextTypes`
+        - `context` implements `IBuildConfigurationContext` with the `Configuration` property as the build configuration (e.g. `"Debug|x86"`, `"ret"`, or `null` if not applicable). This **must** match the configuration from the indexed file data value.
+- Indexed build file data value
+  - Provider Factory
+    - `ExportFileScannerAttribute` attribute with `IReadOnlyCollection<FileDataValue>` as a supported type
+    - Implements `IWorkspaceProviderFactory<IFileScanner>`
+  - File scanner on `ScanContentAsync<T>`
+    - Returns data when `FileScannerTypeConstants.FileDataValuesType` is the type argument
+    - Returns a file data value for each configuration constructed with:
+      - `type` as `BuildConfigurationContext.ContextTypeGuid`
+      - `context` as your build configuration (e.g. `"Debug|x86"`, `"ret"`, or `null` if not applicable). This **must** match the configuration from the file context.
+- Build file context action
+  - Provider factory
+    - `ExportFileContextActionProvider` attribute with `supportedContextTypeGuids` as all applicable `string` constants from `BuildContextTypes`
+    - Implements `IWorkspaceProviderFactory<IFileContextActionProvider>`
+  - Action provider on `IFileContextActionProvider.GetActionsAsync`
+    - Return an `IFileContextAction` that matches the given `FileContext.ContextType` value
+  - File context action
+    - Implements `IFileContextAction` and `IVsCommandItem`
+    - `CommandGroup` property returns `16537f6e-cb14-44da-b087-d1387ce3bf57`
+    - `CommandId` is `0x1000` for build, `0x1010` for rebuild, or `0x1020` for clean
 
-Up to date/incremental
+>![NOTE]
+>Since the `FileDataValue` needs to be indexed, there will be some amount of time between opening the workspace and the point at which the file is scanned for build functionality to light up. This largely impacts the first opening of a folder because there is no previously cached index.
 
-#### Reporting build progress
+#### Reporting messages from a build
 
-`IFileContextAction.ExecuteAsync` will be supplied with the following types when invoked by Visual Studio:
+The build can surface information, warning, and error messages to users one of two ways. The simple way is to use the [IBuildMessageService][Doc:IBuildMessageService] and provide a [BuildMessage][Doc:BuildMessage], like so:
 
-- IProgress<[BuildMessage][Doc:BuildMessage]>
-- [IBuildIncrementalProgressUpdate][Doc:IBuildIncrementalProgressUpdate]
+```csharp
+using Microsoft.VisualStudio.Workspace;
+using Microsoft.VisualStudio.Workspace.Build;
+
+private static void OutputBuildMessage(IWorkspace workspace)
+{
+    IBuildMessageService buildMessageService = workspace.GetBuildMessageService();
+
+    if (buildMessageService != null)
+    {
+      // Example error build message. See the documentation for BuildMessage for more information.
+      var message = new BuildMessage()
+      {
+          Type = BuildMessage.TaskType.Error,
+          Code = "MY1001",
+          TaskText = "This is a sample error",
+          ProjectFile = "buildfile.bld",
+          File = "sourcefile.src"
+          LogMessage = $"This is sample text that will only go to the Build output window pane.\n"
+
+          // And any other properties to set
+      };
+
+      buildMessageService.ReportBuildMessages(new BuildMessage[] { message });
+    }
+}
+```
+
+`BuildMessage.Type` and `LogMessage` control the behavior of where information is presented to the user. Any `BuildMessage.TaskType` value other than `None` will produce an **Error List** entry with the given details. `LogMessage` will always be output in the **Build** pane of the **Output** tool window.
+
+Alternatively, extensions can directly interact with the **Error List** or **Build** pane. A bug exists in versions prior to Visual Studio 2017 Version 15.7 where the `pszProjectUniqueName` argument of [IVsOutputWindowPane2.OutputTaskItemStringEx2][Doc:IVsOutputWindowPane2.OutputTaskItemStringEx2] is ignored.
+
+>![WARNING]
+>Callers of `IFileContextAction.ExecuteAsync` can provider varying underlying implementations for the `IProgress<IFileContextActionProgressUpdate>` argument. Never invoke `IProgress<IFileContextActionProgressUpdate>.Report(IFileContextActionProgressUpdate)` directly. There is currently no general guidelines for using this argument, but this is subject to change.
 
 ### Debug support
 
@@ -376,6 +432,7 @@ Open Folder and the `Microsoft.VisualStudio.Workspace.*` APIs are under active d
 [Doc:FileContext]:/dotnet/api/microsoft.visualstudio.workspace.filecontext
 [Doc:IAsyncDisposable]:/dotnet/api/microsoft.visualstudio.threading.iasyncdisposable
 [Doc:IBuildIncrementalProgressUpdate]:/dotnet/api/microsoft.visualstudio.workspace.build.ibuildincrementalprogressupdate
+[Doc:IBuildMessageService]:/dotnet/api/microsoft.visualstudio.workspace.build.ibuildmessageservice
 [Doc:IFileContextAction]:/dotnet/api/microsoft.visualstudio.workspace.ifilecontextaction
 [Doc:IFileContextActionBase.ExecuteAsync]:/dotnet/api/microsoft.visualstudio.workspace.ifilecontextactionbase.executeasync
 [Doc:IFileContextActionProvider]:/dotnet/api/microsoft.visualstudio.workspace.ifilecontextactionprovider
@@ -390,6 +447,7 @@ Open Folder and the `Microsoft.VisualStudio.Workspace.*` APIs are under active d
 [Doc:IWorkspaceProviderFactory<T>]:/dotnet/api/microsoft.visualstudio.workspace.iworkspaceproviderfactory-1
 [Doc:IWorkspaceServiceFactory<T>]:/dotnet/api/microsoft.visualstudio.workspace.iworkspaceservicefactory-1
 [Doc:IWorkspaceSettingsManager]:dotnet/api/microsoft.visualstudio.workspace.settings.iworkspacesettingsmanager
+[Doc:IVsOutputWindowPane2.OutputTaskItemStringEx2]:/dotnet/api/microsoft.visualstudio.shell.interop.ivsoutputwindowpane2.outputtaskitemstringex2
 [Doc:WorkspaceHelper.GetWorkspaceWorkingFolder]:/dotnet/api/microsoft.visualstudio.workspace.workspacehelper.getworkspaceworkingfolder
 [Doc:WorkspaceHelper.MakeRootedUnderWorkingFolder]:/dotnet/api/microsoft.visualstudio.workspace.workspaceservicehelper.makerootedunderworkingfolder
 [Doc:WorkspaceServiceHelper]:/dotnet/api/microsoft.visualstudio.workspace.workspaceservicehelper
